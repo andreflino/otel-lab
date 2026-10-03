@@ -1,4 +1,6 @@
-# OTel Lab: loadgen -> web -> api -> RabbitMQ -> worker, with Postgres as the store.
+# OTel Lab: loadgen -> web -> api -> RabbitMQ -> worker -> Kafka -> notifier + analytics.
+# Postgres is the source of truth, Redis is the cache (and analytics store).
+# Signup lab: web -> signup -> (dual write | outbox -> outbox-relay) -> Kafka -> email-service -> Mailpit.
 # Telemetry: all services -> otel-collector -> Tempo / Loki (pushed) and Prometheus (scrapes :8889).
 
 x-otel: &otel
@@ -10,6 +12,8 @@ x-otel: &otel
   OTEL_PYTHON_LOG_CORRELATION: "true"
   DATABASE_URL: postgresql://shop:shop@postgres/shop
   RABBITMQ_HOST: rabbitmq
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP: kafka:9092
 
 x-app: &app
   build: ./app
@@ -17,6 +21,8 @@ x-app: &app
   depends_on:
     postgres: { condition: service_healthy }
     rabbitmq: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    kafka: { condition: service_healthy }
     otel-collector: { condition: service_started }
 
 services:
@@ -24,7 +30,12 @@ services:
     <<: *app
     command: web.py
     ports: ["8000:8000"]
-    environment: { <<: *otel, OTEL_SERVICE_NAME: web, API_URL: "http://api:5000" }
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: web
+      API_URL: http://api:5000
+      SIGNUP_URL: http://signup:5001
+      MAILPIT_URL: ${MAILPIT_URL:-http://localhost:8025}
 
   api:
     <<: *app
@@ -37,10 +48,57 @@ services:
     command: worker.py
     environment: { <<: *otel, OTEL_SERVICE_NAME: worker }
 
+  notifier:
+    <<: *app
+    command: notifier.py
+    environment: { <<: *otel, OTEL_SERVICE_NAME: notifier }
+
+  analytics:
+    <<: *app
+    command: analytics.py
+    environment: { <<: *otel, OTEL_SERVICE_NAME: analytics }
+
+  # --- Signup lab (dual write vs. transactional outbox) ---
+  signup:
+    <<: *app
+    command: signup.py
+    ports: ["5001:5001"]
+    environment: { <<: *otel, OTEL_SERVICE_NAME: signup }
+    healthcheck:   # also guarantees the signup tables exist before the relay and email service start
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/signup/status')"]
+      interval: 5s
+      retries: 20
+
+  outbox-relay:
+    <<: *app
+    command: outbox_relay.py
+    environment: { <<: *otel, OTEL_SERVICE_NAME: outbox-relay }
+    depends_on:
+      signup: { condition: service_healthy }
+
+  email-service:
+    <<: *app
+    command: email_service.py
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: email-service
+      SMTP_HOST: mailpit
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8000}   # base URL of the confirmation links
+    depends_on:
+      signup: { condition: service_healthy }
+      mailpit: { condition: service_started }
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 500
+    ports: ["8025:8025"]                   # fake inbox web UI (SMTP on 1025 inside the network)
+
   loadgen:
     <<: *app
     command: loadgen.py
-    environment: { <<: *otel, OTEL_SERVICE_NAME: loadgen, WEB_URL: "http://web:8000" }
+    environment: { <<: *otel, OTEL_SERVICE_NAME: loadgen, WEB_URL: "http://web:8000", MAILPIT_API: "http://mailpit:8025" }
 
   postgres:
     image: postgres:17
@@ -88,6 +146,69 @@ services:
       interval: 10s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Small memory cap; only keys with a TTL (the order cache) can be evicted, never the analytics data.
+    command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports: ["9121:9121"]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  kafka:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    environment:
+      # Single-node KRaft (no ZooKeeper): this node is both broker and controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3              # auto-created topics get 3 partitions
+      KAFKA_HEAP_OPTS: -Xmx384m -Xms384m
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      retries: 12
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    restart: unless-stopped
+    command: ["--kafka.server=kafka:9092"]
+    ports: ["9308:9308"]                   # consumer group lag, offsets, partitions
+    depends_on:
+      kafka: { condition: service_healthy }
+
+  kafka-ui:
+    image: kafbat/kafka-ui:latest
+    restart: unless-stopped
+    environment:
+      KAFKA_CLUSTERS_0_NAME: otel-lab
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      JAVA_OPTS: -Xmx256m
+    ports: ["8080:8080"]                   # browse topics, partitions, messages, consumer groups
+    depends_on:
+      kafka: { condition: service_healthy }
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.130.0
     restart: unless-stopped
@@ -101,3 +222,4 @@ services:
 
 volumes:
   pgdata:
+  kafkadata:

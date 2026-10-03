@@ -9,16 +9,21 @@ import pika
 from opentelemetry import metrics, trace
 from opentelemetry.trace import Status, StatusCode
 
+import cache
 from db import chaos_sleep, cursor
+from events import TOPIC, producer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger("worker")
 logging.getLogger("pika").setLevel(logging.WARNING)
+logging.getLogger("kafka").setLevel(logging.WARNING)
 
 tracer = trace.get_tracer("worker")
 meter = metrics.get_meter("worker")
 processed = meter.create_counter("orders_processed", description="Orders processed by the worker")
 duration = meter.create_histogram("order_processing_seconds", unit="s", description="Time to process an order")
+
+kafka = producer()
 
 
 def handle(ch, method, properties, body):
@@ -48,6 +53,13 @@ def handle(ch, method, properties, body):
         with cursor() as cur:
             cur.execute("UPDATE orders SET status = %s, processed_at = now() WHERE id = %s", (status, order["id"]))
             cur.execute("INSERT INTO order_events (order_id, event) VALUES (%s, %s)", (order["id"], status))
+
+        # The order changed, so its cached copy is stale. Comment this out to see stale reads in the UI.
+        cache.invalidate(order["id"])
+
+        # Announce the outcome on Kafka. Keying by order id keeps all events of one order in one partition (ordered).
+        kafka.send(TOPIC, key=order["id"], value={"order_id": order["id"], "item": order["item"],
+                                                 "qty": order["qty"], "status": status})
 
     processed.add(1, {"status": status})
     duration.record(time.time() - start, {"status": status})

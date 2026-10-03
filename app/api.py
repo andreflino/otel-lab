@@ -9,6 +9,7 @@ import pika
 from flask import Flask, jsonify, request
 from opentelemetry import metrics, trace
 
+import cache
 from db import chaos_sleep, cursor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -66,7 +67,20 @@ def list_orders():
 
 @app.get("/orders/<order_id>")
 def get_order(order_id):
-    trace.get_current_span().set_attribute("order.id", order_id)
+    span = trace.get_current_span()
+    span.set_attribute("order.id", order_id)
+
+    # Cache-aside: try Redis first, fall back to Postgres and populate the cache.
+    if not cache.enabled():
+        cache.record("bypass")
+    elif (cached := cache.get_order(order_id)) is not None:
+        cache.record("hit")
+        span.set_attribute("cache.hit", True)
+        return jsonify(cached | {"source": "cache"})
+    else:
+        cache.record("miss")
+        span.set_attribute("cache.hit", False)
+
     with cursor() as cur:
         cur.execute("SELECT * FROM orders WHERE id = %s", (order_id,))
         order = cur.fetchone()
@@ -76,7 +90,9 @@ def get_order(order_id):
         # Fix it with: CREATE INDEX ON order_events (order_id);
         cur.execute("SELECT event, created_at FROM order_events WHERE order_id = %s ORDER BY created_at", (order_id,))
         order["history"] = cur.fetchall()
-        return jsonify(order)
+    if cache.enabled():
+        cache.put_order(order)
+    return jsonify(order | {"source": "database"})
 
 
 @app.get("/settings/slow")
@@ -93,6 +109,26 @@ def set_slow():
         cur.execute("UPDATE settings SET value = %s WHERE key = 'slow_ms'", (ms,))
     log.warning("chaos: slow query delay set to %sms", ms)
     return jsonify(slow_ms=ms)
+
+
+@app.get("/settings/cache")
+def get_cache():
+    return jsonify(cache.stats())
+
+
+@app.post("/settings/cache")
+def set_cache():
+    on = bool(request.get_json(force=True).get("enabled", True))
+    cache.set_enabled(on)
+    log.warning("cache %s", "enabled" if on else "disabled")
+    return jsonify(cache.stats())
+
+
+@app.get("/analytics")
+def analytics():
+    top = cache.r.zrevrange("analytics:top_items", 0, 4, withscores=True)
+    return jsonify(top_items=[{"item": i, "qty": int(q)} for i, q in top],
+                   status=cache.r.hgetall("analytics:status"))
 
 
 @app.get("/health")
