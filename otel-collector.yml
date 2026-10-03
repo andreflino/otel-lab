@@ -1,0 +1,46 @@
+# Every service sends OTLP here; the collector fans out to your Tempo / Loki host (MONITORING_HOST).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  resource:
+    attributes:
+      - key: host.name
+        value: ${env:LAB_HOSTNAME}
+        action: upsert
+
+exporters:
+  # Traces -> Tempo
+  otlp/tempo:
+    endpoint: ${env:MONITORING_HOST}:4317
+    tls:
+      insecure: true
+  # Metrics -> exposed on :8889, scraped by Prometheus (job "otel-lab")
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+  # Logs -> Loki's native OTLP endpoint
+  otlphttp/loki:
+    endpoint: http://${env:MONITORING_HOST}:3100/otlp
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp/loki]

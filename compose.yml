@@ -1,0 +1,103 @@
+# OTel Lab: loadgen -> web -> api -> RabbitMQ -> worker, with Postgres as the store.
+# Telemetry: all services -> otel-collector -> Tempo / Loki (pushed) and Prometheus (scrapes :8889).
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=lab,service.namespace=otel-lab
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+  OTEL_PYTHON_LOG_CORRELATION: "true"
+  DATABASE_URL: postgresql://shop:shop@postgres/shop
+  RABBITMQ_HOST: rabbitmq
+
+x-app: &app
+  build: ./app
+  restart: unless-stopped
+  depends_on:
+    postgres: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+    otel-collector: { condition: service_started }
+
+services:
+  web:
+    <<: *app
+    command: web.py
+    ports: ["8000:8000"]
+    environment: { <<: *otel, OTEL_SERVICE_NAME: web, API_URL: "http://api:5000" }
+
+  api:
+    <<: *app
+    command: api.py
+    ports: ["5000:5000"]
+    environment: { <<: *otel, OTEL_SERVICE_NAME: api }
+
+  worker:
+    <<: *app
+    command: worker.py
+    environment: { <<: *otel, OTEL_SERVICE_NAME: worker }
+
+  loadgen:
+    <<: *app
+    command: loadgen.py
+    environment: { <<: *otel, OTEL_SERVICE_NAME: loadgen, WEB_URL: "http://web:8000" }
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - log_min_duration_statement=50    # log every query slower than 50 ms
+    ports: ["5432:5432"]
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    logging:
+      driver: journald                     # picked up by promtail -> Loki
+      options: { tag: otel-lab-postgres }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      retries: 30
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://shop:shop@postgres:5432/shop?sslmode=disable
+    command: ["--collector.stat_statements"]
+    ports: ["9187:9187"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    ports:
+      - "15672:15672"   # management UI (guest/guest)
+      - "15692:15692"   # Prometheus metrics (built-in rabbitmq_prometheus plugin)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 12
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yml"]
+    environment:
+      MONITORING_HOST: ${MONITORING_HOST:?set MONITORING_HOST in .env}
+      LAB_HOSTNAME: ${LAB_HOSTNAME:-otel-lab}
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol/config.yml:ro
+    ports: ["8889:8889"]                   # Prometheus scrape endpoint
+
+volumes:
+  pgdata:
