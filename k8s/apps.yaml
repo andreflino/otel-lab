@@ -5,6 +5,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -50,6 +51,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -95,6 +97,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -126,6 +129,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: notifier
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -157,6 +161,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: analytics
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -188,6 +193,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: signup
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -233,6 +239,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: outbox-relay
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -264,6 +271,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: email-service
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:
@@ -295,6 +303,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: loadgen
+  labels: { tier: app }
 spec:
   replicas: 1
   selector:

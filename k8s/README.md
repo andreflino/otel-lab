@@ -1,5 +1,7 @@
 # OTel Lab on Kubernetes (k3s)
 
+Full walkthrough (VM, k3s install, how it works, operating it): [docs/kubernetes.md](../docs/kubernetes.md).
+
 The same system as `compose.yml`, as Kubernetes manifests (Kustomize). Tested on a single-node k3s.
 
 ## What's in here
