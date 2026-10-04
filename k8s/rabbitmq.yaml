@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  selector: { app: rabbitmq }
+  ports:
+    - { name: amqp, port: 5672 }
+    - { name: management, port: 15672 }   # UI (guest/guest), exposed via ingress
+    - { name: metrics, port: 15692 }      # built-in Prometheus plugin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rabbitmq }
+  template:
+    metadata:
+      labels: { app: rabbitmq }
+    spec:
+      enableServiceLinks: false   # RABBITMQ_* service env vars would confuse the image
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4-management
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+            - containerPort: 15692
+          # A TCP probe, not `rabbitmq-diagnostics ping`: an exec probe runs as root right at startup and
+          # creates /var/lib/rabbitmq/.erlang.cookie owned by root, so RabbitMQ (user rabbitmq) can't read
+          # its own cookie and crash-loops with "eacces".
+          readinessProbe:
+            tcpSocket: { port: 5672 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }

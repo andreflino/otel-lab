@@ -1,0 +1,161 @@
+# In-cluster OpenTelemetry Collector.
+#  - receives OTLP from every app pod
+#  - k8sattributes: tags every span, metric and log with namespace, pod, deployment and node
+#  - scrapes the in-cluster exporters + kube-state-metrics
+#  - traces -> Tempo, logs -> Loki (MONITORING_HOST); metrics -> :8889, exposed on NodePort 30889
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-lab-collector
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets, deployments, statefulsets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-lab-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-lab-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: otel-lab
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+data:
+  config.yml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: otel-lab-postgres
+              static_configs: [{ targets: ["postgres-exporter:9187"] }]
+            - job_name: otel-lab-redis
+              static_configs: [{ targets: ["redis-exporter:9121"] }]
+            - job_name: otel-lab-kafka
+              static_configs: [{ targets: ["kafka-exporter:9308"] }]
+            - job_name: otel-lab-rabbitmq
+              static_configs: [{ targets: ["rabbitmq:15692"] }]
+            - job_name: kube-state-metrics
+              static_configs: [{ targets: ["kube-state-metrics:8080"] }]
+
+    processors:
+      batch: {}
+      # Pods send OTLP straight to this collector, so the connection's source IP identifies the pod.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.deployment.name
+            - k8s.statefulset.name
+            - k8s.node.name
+        pod_association:
+          - sources: [{ from: connection }]
+      resource:
+        attributes:
+          - { key: k8s.cluster.name, value: "${env:K8S_CLUSTER_NAME}", action: upsert }
+
+    exporters:
+      otlp/tempo:
+        endpoint: ${env:MONITORING_HOST}:4317
+        tls: { insecure: true }
+      otlphttp/loki:
+        endpoint: http://${env:MONITORING_HOST}:3100/otlp
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion: { enabled: true }
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [k8sattributes, resource, batch]
+          exporters: [otlp/tempo]
+        logs:
+          receivers: [otlp]
+          processors: [k8sattributes, resource, batch]
+          exporters: [otlphttp/loki]
+        metrics:
+          receivers: [otlp]
+          processors: [k8sattributes, resource, batch]
+          exporters: [prometheus]
+        metrics/infra:   # scraped exporter metrics are not pod telemetry, so skip k8sattributes
+          receivers: [prometheus]
+          processors: [resource, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: otel-collector }
+  template:
+    metadata:
+      labels: { app: otel-collector }
+    spec:
+      serviceAccountName: otel-collector
+      enableServiceLinks: false
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.130.0
+          args: ["--config=/etc/otelcol/config.yml"]
+          envFrom:
+            - configMapRef: { name: telemetry-backend }
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+            - containerPort: 8889
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+      volumes:
+        - name: config
+          configMap: { name: otel-collector }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector: { app: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317 }
+    - { name: otlp-http, port: 4318 }
+---
+# Prometheus (outside the cluster) scrapes <node-ip>:30889
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-metrics
+spec:
+  type: NodePort
+  selector: { app: otel-collector }
+  ports:
+    - { name: metrics, port: 8889, nodePort: 30889 }

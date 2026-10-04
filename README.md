@@ -82,6 +82,9 @@ Expected results (10 signups each):
 
 ## Running it
 
+> **Kubernetes:** the same stack runs on k3s with the manifests in [`k8s/`](k8s/README.md).
+
+
 Requirements: Docker with Compose, and an observability backend with Tempo (OTLP gRPC :4317),
 Loki 3.x (OTLP on :3100, `allow_structured_metadata: true`) and Prometheus. About 2.5 GB RAM.
 

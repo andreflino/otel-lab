@@ -1,0 +1,101 @@
+# Infrastructure exporters. The in-cluster OTel collector scrapes them (see otel-collector.yaml),
+# so the external Prometheus only needs one target.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres-exporter }
+  template:
+    metadata:
+      labels: { app: postgres-exporter }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:latest
+          args: ["--collector.stat_statements"]
+          env:
+            - name: DATA_SOURCE_NAME
+              valueFrom: { secretKeyRef: { name: lab-secrets, key: DATA_SOURCE_NAME } }
+          ports:
+            - containerPort: 9187
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+spec:
+  selector: { app: postgres-exporter }
+  ports:
+    - port: 9187
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis-exporter }
+  template:
+    metadata:
+      labels: { app: redis-exporter }
+    spec:
+      enableServiceLinks: false   # REDIS_* service env vars would override its config
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:latest
+          env:
+            - { name: REDIS_ADDR, value: "redis://redis:6379" }
+          ports:
+            - containerPort: 9121
+          resources:
+            requests: { cpu: 20m, memory: 16Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+spec:
+  selector: { app: redis-exporter }
+  ports:
+    - port: 9121
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kafka-exporter }
+  template:
+    metadata:
+      labels: { app: kafka-exporter }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:latest
+          args: ["--kafka.server=kafka:9092"]
+          ports:
+            - containerPort: 9308
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-exporter
+spec:
+  selector: { app: kafka-exporter }
+  ports:
+    - port: 9308

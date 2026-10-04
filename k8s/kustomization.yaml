@@ -1,0 +1,34 @@
+# OTel Lab on Kubernetes (tested on k3s).
+# Apply with:  kubectl kustomize --load-restrictor LoadRestrictionsNone k8s | kubectl apply -f -
+# (the load restrictor flag lets the Postgres init script be shared with docker compose)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: otel-lab
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: otel-lab
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - postgres.yaml
+  - redis.yaml
+  - rabbitmq.yaml
+  - kafka.yaml
+  - mailpit.yaml
+  - exporters.yaml
+  - kube-state-metrics.yaml
+  - otel-collector.yaml
+  - apps.yaml
+  - ingress.yaml
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - init.sql=../postgres/init.sql
+
+images:
+  - name: otel-lab-app
+    newName: ghcr.io/andreflino/otel-lab-app
+    newTag: latest

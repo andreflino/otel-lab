@@ -1,0 +1,323 @@
+# The app services. One image (built by .github/workflows/image.yml); args pick the service.
+# An init container waits for the infrastructure, so pods don't crash-loop on a cold start.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: web
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["web.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: web }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  selector: { app: web }
+  ports:
+    - port: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api }
+  template:
+    metadata:
+      labels: { app: api, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: api
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["api.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: api }
+          ports:
+            - containerPort: 5000
+          readinessProbe:
+            httpGet: { path: /health, port: 5000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector: { app: api }
+  ports:
+    - port: 5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: worker
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["worker.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: worker }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 192Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifier
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notifier }
+  template:
+    metadata:
+      labels: { app: notifier, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: notifier
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["notifier.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: notifier }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 160Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: analytics }
+  template:
+    metadata:
+      labels: { app: analytics, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: analytics
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["analytics.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: analytics }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 160Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signup
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: signup }
+  template:
+    metadata:
+      labels: { app: signup, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: signup
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["signup.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: signup }
+          ports:
+            - containerPort: 5001
+          readinessProbe:
+            httpGet: { path: /signup/status, port: 5001 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signup
+spec:
+  selector: { app: signup }
+  ports:
+    - port: 5001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: outbox-relay }
+  template:
+    metadata:
+      labels: { app: outbox-relay, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done && until wget -qO- http://signup:5001/signup/status >/dev/null 2>&1; do echo waiting for signup schema; sleep 2; done"]
+      containers:
+        - name: outbox-relay
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["outbox_relay.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: outbox-relay }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 160Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: email-service }
+  template:
+    metadata:
+      labels: { app: email-service, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done && until wget -qO- http://signup:5001/signup/status >/dev/null 2>&1; do echo waiting for signup schema; sleep 2; done"]
+      containers:
+        - name: email-service
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["email_service.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: email-service }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 160Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: loadgen }
+  template:
+    metadata:
+      labels: { app: loadgen, tier: app }
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432 && nc -z rabbitmq 5672 && nc -z redis 6379 && nc -z kafka 9092; do echo waiting for postgres/rabbitmq/redis/kafka; sleep 2; done"]
+      containers:
+        - name: loadgen
+          image: otel-lab-app
+          imagePullPolicy: Always
+          args: ["loadgen.py"]
+          envFrom:
+            - configMapRef: { name: lab-config }
+            - secretRef: { name: lab-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: loadgen }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 160Mi }

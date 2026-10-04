@@ -1,0 +1,23 @@
+# Friendly URLs through k3s's built-in Traefik. Point *.lab.home.arpa at the node in your DNS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: otel-lab
+spec:
+  rules:
+    - host: shop.lab.home.arpa
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: web, port: { number: 8000 } } } }
+    - host: mail.lab.home.arpa
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: mailpit, port: { number: 8025 } } } }
+    - host: kafka.lab.home.arpa
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: kafka-ui, port: { number: 8080 } } } }
+    - host: rabbitmq.lab.home.arpa
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: rabbitmq, port: { number: 15672 } } } }

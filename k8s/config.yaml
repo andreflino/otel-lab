@@ -1,0 +1,45 @@
+# Settings shared by every app pod (the Kubernetes version of compose's x-otel block and .env).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-config
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=k3s,service.namespace=otel-lab
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+  OTEL_PYTHON_LOG_CORRELATION: "true"
+  RABBITMQ_HOST: rabbitmq
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP: kafka:9092
+  SMTP_HOST: mailpit
+  API_URL: http://api:5000
+  SIGNUP_URL: http://signup:5001
+  WEB_URL: http://web:8000
+  MAILPIT_API: http://mailpit:8025
+  # How a browser reaches the lab (links in emails and on the signup page)
+  PUBLIC_URL: http://shop.lab.home.arpa
+  MAILPIT_URL: http://mail.lab.home.arpa
+---
+# Lab-default credentials, same as docker compose. Not a real secret store, just the right object type.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: lab-secrets
+stringData:
+  POSTGRES_USER: shop
+  POSTGRES_PASSWORD: shop
+  POSTGRES_DB: shop
+  DATABASE_URL: postgresql://shop:shop@postgres/shop
+  DATA_SOURCE_NAME: postgresql://shop:shop@postgres:5432/shop?sslmode=disable
+---
+# Where the collector ships traces and logs. Override MONITORING_HOST for your network
+# (see k8s/README.md: a git-ignored k8s-local/ overlay is the easy way).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telemetry-backend
+data:
+  MONITORING_HOST: 192.168.1.10
+  K8S_CLUSTER_NAME: k3s-lab
